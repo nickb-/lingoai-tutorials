@@ -365,5 +365,7 @@ This final model is looking fantastic. Getting here was a bit of a journey - and
   - is constrained by an reasonable upper ceiling to the yields  
   - handles the early years prior to 2005  
   - accounts for both bumper crops and normal crops  
-  - is 100% transparent, interpretable and accurate  
+  - is 100% transparent, interpretable and accurate    
+  - we've done all of this with very little data... nice!  
   
+Could we go further? Yes, we probably could. In particular, the "future growth", or the long-term trend model could benefit from more domain knowledge and incorporating some of the business' projections. But for now, I'm pretty happy wiht this.
