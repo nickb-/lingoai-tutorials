@@ -1,0 +1,369 @@
+---
+title: "Forecasting NZ's Annual Avocado Yield"
+output: html_notebook
+---
+
+### Intermediate Regression Tutorial  
+**Nick Burns**
+**Lingo Search & AI**  
+**LinkedIn: https://www.linkedin.com/company/lingo-search-ai**  
+
+### Regression Models: a powerful tool for augmented intelligence  
+
+We are massive fans of regression models here at Lingo Search & AI. There are a lot of myths and misconceptions around regression, such as it cannot capture non-linear trends and is not suitable for more complex datasets. These misconceptions arise through a lack of familiarity with regression techniques, and perhaps too, a lack of training in more advanced regression methods.  
+
+But regression models are incredibly powerful. We use them every day to capture structural and functional patterns in the data and to derive robust (and accurate) prediction models. We like that regression methods are transparent, easily interpretable and are a great way to incorporate domain knowledge and human expertise within the model structure itself. They are a great tool towards "augmented intelligence", where human expertise is supported and enhanced through predictive models which embrace the business domain and which aren't simply a black box.
+
+### About this tutorial  
+
+There is a wealth of machine learning tutorials, blogs and courses online, but it is more challenging to find good learning material for regression models. If you want to dive deeper, our favourite books are:  
+
+  - Regression and Other Stories (Gelman, Hill and Vehtari)  
+  - Regression Modelling Strategies: With Applications to Linear Models, Logistic Regression, and Survival Analysis (Frank E. Harrell)  
+  - Statistical Rethinking (Richard McElreath)  
+  - Bayesian Data Analysis, BDA3 (Gelman *et. al.*)  
+  
+In this tutorial, we are going to forecast the annual yield of avocados here in New Zealand. We'll do this using Stan, and we will incrementally build our model from simple concepts, up to a more complex non-linear mixture model. This isn't a tutorial in Bayesian stats or Stan. Nor is this a tutorial about regression itself. For more technical material, see the books above. Instead, we will focus on the iterative development process - slowly improving the model, slowly extending the model and improving the predictions. I don't think there is enough material out there which helps to step people through this iterative workflow - and it is an important part of the modelling precess.  
+
+### Avocado Yields in NZ  
+
+Avocados are a growing export fruit here in New Zealand. The board reports of [New Zealand Avocado](https://www.nzavocado.co.nz/) are an interesting read, and talk of the "celebrity status" that avocados reached back in 2014. With this surge in popularity of Avocados, both the domestic and export markets have grown exponentially over the last ten years. We've trawled through their board reports and extracted the annual yield information going back to approx. 2000. Let's have a look at this:
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(rstan)
+
+avo <- fread("../data/Avo_AnnualVolumes_1999-2017.csv")
+avo <- avo[Year < 2017]
+
+head(avo)
+ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill = "darkgrey", alpha = 0.5) +
+  theme_minimal() +
+  ggtitle("Annual Avocado Yield") + xlab("") + ylab("Yield (x100 Tonnes)")
+```
+We can see that the yields remained relatively flat until approx 2005, at which point they yield started to accelerate. Let's start to model this.
+
+### Iteration One: Simple linear long-term trend  
+
+At first glance, the growth from 2005 onwards seems reasonably steady. The simplest model we could have for this is a linear growth trend:  
+
+$$  
+yield \sim Normal(\mu, \sigma)  \\  
+\mu = \alpha + \beta.year  \\  
+\alpha \sim Normal(50, 25)  \\  
+\beta \sim Normal(0, 20)  \\
+\sigma \sim HalfNormal(0, 5)
+$$
+
+Let's fit this using stan, and plot the results:
+
+```{r}
+fit <- stan(
+  "../stan/avo/linear_growth.stan",
+  data = list('N' = nrow(avo), yield = avo$TotalTonnes / 100, 'year' = 1:nrow(avo)),
+  chains = 1
+)
+round(summary(fit)$summary[1:4, ], 3)
+```
+
+We have no warnings from stan, which is a positive sign. The `Rhat` and `n_eff` are reasonable. Let's look at the results:
+
+```{r}
+yhats <- extract(fit)$yhat
+avo[, linear_growth := colMeans(yhats)]
+
+ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill='white', alpha = 0.5) +
+  geom_line(aes(y = linear_growth), colour = 'darkblue', linetype='dashed') +
+  geom_ribbon(aes(ymin = linear_growth - 2*apply(yhats, 2, sd), ymax = linear_growth + 2*apply(yhats, 2, sd)),
+              colour = 'darkgrey', alpha=0.25) +
+  theme_minimal() +
+  ggtitle("Linear Growth Model") + xlab("") + ylab("Yield (x100 Tonnes)")
+```
+This linear trend is about as simple as we can conceive for this data. The results aren't terrible - they are sensible. However, the uncertainty intervals are high, and it doesn't look like we are capturing much of the detail in the yield curve. 
+
+### Iteration Two: Saturated Growth  
+
+One of the first things that jump out at me here, is that assuming that the growth will continue to grow linearly forever is a little too simplistic. New Zealand is a small country, and avocado has to compete with our larger exports (beef, lamb and dairy) for space. It seems more likely that there will be a cap, an upper limit, to the amount of avocado produced each year. So, for our second iteration, let's refactor the model so that future yields follow a saturating growth curve.
+
+Our second model will be:  
+
+$$
+yield \sim Normal(\mu, \sigma)  \\  
+\mu = \alpha + \beta.log(year)  \\  
+\alpha \sim Normal(50, 25)  \\  
+\beta \sim Normal(0, 20)  \\
+\sigma \sim HalfNormal(0, 5)
+$$
+
+We'll use the same stan model as before, but simply log-transform the year feature:
+
+```{r}
+fit <- stan(
+  "../stan/avo/linear_growth.stan",
+  data = list('N' = nrow(avo), yield = avo$TotalTonnes / 100, 'year' = log2(1:nrow(avo))),
+  chains = 1
+)
+round(summary(fit)$summary[1:4, ], 3)
+```
+Again, we have no warnings from stan, which is a positive sign. The `Rhat` and `n_eff` are reasonable. Let's look at the results:
+
+```{r}
+yhats <- extract(fit)$yhat
+avo[, linear_growth := colMeans(yhats)]
+
+ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill='white', alpha = 0.5) +
+  geom_line(aes(y = linear_growth), colour = 'darkblue', linetype='dashed') +
+  theme_minimal() +
+  ggtitle("Saturated Growth Model") + xlab("") + ylab("Yield (x100 Tonnes)")
+```
+
+Our prediction model now shows a saturating growth curve - which is great! This is some "domain knowledge" that we want our model to incorporate. However, the fit doesn't look quite as 'reasonable' as before: it's too high at the start, it's too low at the end, and the residual error is higher. From a pure "accuracy" perspective this is a backwards step. But the saturating fit is a domain constraint that we must keep... so what next?
+
+### Iteration Three: Bienniel Model  
+
+Knowing a little more about avocado production might just help us... Avocado is a biennial fruit. It tends to have a bumper crop one year followed by a smaller crop on the off years. We can see this in the historical yields too, with bumper crops evident in 2005, 2007, 2009, 2011, 2014 and 2016. 
+
+Note however, that this pattern isn't strictly alternating. It will be impacted by weather and influenced by the maturing of new avocado orchards. So we can't simply add an alternating indicator variable for this. 
+
+This is where our Bayesian approach will start to shine. Using stan, we can define our model as a mixture model. In this case, it will be a mixture with 2 components, one for the bumper years and one for the smaller yields. We don't need to identify these in the data, we will let the model choose the most appropriate mixture given the data.
+
+Again, this is a reasonably small extension to our previous model:
+
+$$
+yield \sim Normal(\mu_i, \sigma)  \\  
+\mu_i = \alpha_i + \beta_i.log(year)  \\  
+\alpha_i \sim Normal(50, 25)  \\  
+\beta_i \sim Normal(0, 20)  \\
+\sigma \sim HalfNormal(0, 5)  \\  
+  \\  
+  \\  
+where \ i \begin{cases}
+  1, & if \ bumper \ year  \\  
+  0, & otherwise  
+\end{cases}
+$$
+
+Check out the stan file if you're interested in the stan code for this. We'll fit and inspect the results:
+
+```{r}
+fit <- stan(
+  "../stan/avo/biennial_model.stan",
+  data = list('N' = nrow(avo), yield = avo$TotalTonnes / 100, 'year' = log2(1:nrow(avo))),
+  chains = 1
+)
+round(summary(fit)$summary[1:6, ], 3)
+```
+
+Again, we have no warnings from stan, which is a positive sign. The `Rhat` and `n_eff` are reasonable. Let's look at the results:
+
+```{r}
+yhats <- extract(fit)$yhat
+avo[, bumper_growth := colMeans(yhats[,,1])]
+avo[, normal_growth := colMeans(yhats[,,2])]
+
+g1 <- ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill='white', alpha = 0.5) +
+  geom_line(aes(y = bumper_growth), colour = 'darkblue', linetype='dashed') +
+  geom_line(aes(y = normal_growth), colour = 'darkblue', linetype='dashed') +
+  theme_minimal() +
+  ggtitle("Biennial Model") + xlab("") + ylab("Yield (x100 Tonnes)")
+
+g2 <- ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill='white', alpha = 0.5) +
+  geom_line(aes(y = bumper_growth), colour = 'darkblue', linetype='dashed') +
+  geom_line(aes(y = normal_growth), colour = 'darkblue', linetype='dashed') +
+  geom_ribbon(aes(ymin = bumper_growth - 2*apply(yhats[,,1], 2, sd), ymax = bumper_growth + 2*apply(yhats[,,1], 2, sd)),
+              colour = 'darkgrey', alpha=0.25) +
+  geom_ribbon(aes(ymin = normal_growth - 2*apply(yhats[,,2], 2, sd), ymax = normal_growth + 2*apply(yhats[,,2], 2, sd)),
+              colour = 'darkgrey', alpha=0.25) +
+  theme_minimal() +
+  ggtitle("Biennial Model") + xlab("") + ylab("Yield (x100 Tonnes)")
+
+g1
+g2
+```
+
+The good news, is that we have a model now which respects the biennial pattern of avocado and which also incorporates the domain constraint of saturating growth. This sounds good... the model is a reflection of our domain knowledge. However, the fit is poor:  
+
+  - the bumper year forecasts aren't too bad.  
+  - the normal years are too low.  
+  - the uncertainty in these is enormous. 
+
+This isn't good. 
+
+At this point, there might be a temptation to throw this model out and start again. Perhaps you might be tempted to change direction entirely and throw this at a random forest or a neural network - this data is clearly nonlinear and a challenge to model after all! But that would be an extreme reaction, and it may not actually help you solve your problem...
+
+The questions to ask at this point are:   
+
+  - where does this model struggle?  
+  - What areas of the data does the model struggle to describe?   
+  - Why might this be the case?  
+  
+Simply throwing the data at another algorithm would be a mistake - it won't help you start to explore these questions and develop a more robust model. You might get lucky... but it probably won't be a good model, and it will almost certainly result in throwing away the domain knowledge that you definitely want to keep. So then... what next?
+
+### Iteration Four: Extended Biennial Model  
+
+Let's look at the fit above. Where does the model struggle? I see a couple of things here:  
+
+  1. The normal years seem to be too flat...  
+  2. The model does a very poor job of fitting the early years (prior to ~2005). You can see this, with the steep climb in the bumper model (which isn't reflected in the data) and these initial years are also flattening the model of the normal years.  
+  
+We need a more detailed model, one that can capture and account for the earlier trends prior to 2005.  
+
+Let's have a look at a loess-fit to the data, to get a sense of what might be a little more sensible:  
+
+```{r}
+avo[, bumper_indicator := 1]
+avo[Year %in% c(1999, 2001, 2003, 2004, 2006, 2008, 2010, 2012, 2015), bumper_indicator := 0]
+
+ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill='white', alpha = 0.5) +
+  geom_smooth(aes(group = factor(bumper_indicator)), se = FALSE) +
+  theme_minimal() +
+  ggtitle("Loess fit to historical yields") + xlab("") + ylab("Yield (x100 Tonnes)")
+```
+
+The loess curves here follow the historical data quite nicely, and what we see here is that the growth is more exponential than logarithmic. This aligns well to the domain knowledge too, where New Zealand Avocado's board reports talk of a dramatic rise in the popularity of avocados and a steep rise in both domestic and export demand.  
+
+However, an unconstrained exponential model would lead to exploding forecasts into the future which is not consistent with our domain constraint and knowledge. So what to do?  
+
+You might be tempted to start to factor in demand forecasts. However, in this case, I think that would be a mistake. Demand is correlated with supply (yield) but it is not causally related. There will always be an upper limit to how much avocado NZ farms can produce, regardless of demand. We've seen that when demand outstrips supply, prices sky rocket. So this isn't the solution.
+
+Instead, let's tweak our growth model so that it follows more of a sigmoidal shape (i.e. an S-shape). Sounds fancy? It's not really. This is a pretty typical natural growth curve, where a species' growth is initially exponentially, but then flattens out again due to natural constraints (perhpas due to a lack of food, or space, or the growth in predator numbers). 
+
+We are going to use the following form of a "sigmoidal" growth curve:
+
+$$
+growth = \gamma \frac{1 + exp(\beta\eta)}{1 + exp(\beta (\eta - year))}
+$$
+
+$\beta$ and $\eta$ control the center and slope of the curve. $\gamma$ controls the magnitude of the curve. We're going to stick with our biennial mixture model as well, so we would expect $\gamma$ to be larger for the bumper year model than the model for the normal years. 
+
+Our yield model will now be:
+
+$$
+yield \sim Normal(\mu_i, \sigma)  \\  
+\mu_i = \alpha + growth_i  \\  \ \\  
+growth_i =  \gamma_i \frac{1 + exp(\beta\eta)}{1 + exp(\beta (\eta - year_i))} \\  \ \\  
+\alpha \sim Normal(0, 10)  \\  
+\beta \sim Normal(0, 5)  \\
+\eta \sim Normal(0, 5)  \\
+\gamma_i \sim Normal(0, 5)  \\
+\sigma \sim HalfNormal(0, 5)  \\  
+  \\  
+  \ \\  
+where \ i \begin{cases}
+  1, & if \ bumper \ year  \\  
+  0, & otherwise  
+\end{cases}
+$$
+As before, this is a mixture model. The mixture model assumes the same growth model for both mixtures, except for the magnitude parameter. This looks more complex, but isn't too difficult to code in stan (see the stan file).  
+
+Let's fit this and inspect the results:
+
+```{r}
+fit <- stan(
+  "../stan/avo/biennial_sigmoid_model.stan",
+  data = list('N' = nrow(avo), yield = avo$TotalTonnes / 100, 'year' = 1:nrow(avo)),
+  chains = 1
+)
+round(summary(fit)$summary[1:8, ], 3)
+```
+
+Looking at the printout above, the `n_eff` and `Rhat` values look reasonable, and Stan isn't complaining about any degeneracies. We have two very different estimates for $\gamma$, which should be consistent with the strength of the growth curve for the bumper years compared to the normal years. 
+
+Let's look at the fit:
+
+```{r}
+yhats <- extract(fit)$yhat
+avo[, bumper_growth := colMeans(yhats[,,1])]
+avo[, normal_growth := colMeans(yhats[,,2])]
+
+ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill='white', alpha = 0.5) +
+  geom_line(aes(y = bumper_growth), colour = 'darkblue', linetype='dashed') +
+  geom_line(aes(y = normal_growth), colour = 'darkblue', linetype='dashed') +
+  geom_ribbon(aes(ymin = bumper_growth - 2*apply(yhats[,,1], 2, sd), ymax = bumper_growth + 2*apply(yhats[,,1], 2, sd)),
+              colour = 'darkgrey', alpha=0.25) +
+  geom_ribbon(aes(ymin = normal_growth - 2*apply(yhats[,,2], 2, sd), ymax = normal_growth + 2*apply(yhats[,,2], 2, sd)),
+              colour = 'darkgrey', alpha=0.25) +
+  theme_minimal() +
+  ggtitle("Biennial Growth Model") + xlab("") + ylab("Yield (x100 Tonnes)")
+```
+This is a massive improvement. We've now got two mixtures, one for the bumper years and one for the "normal" years which fit the data well and which still respect our domain constraints and expertise. This is really promising.
+
+
+### Iteration Five: Refining the final model  
+
+This appears to be a good working model. The only thing left is to refine it. We are going to:
+
+  - allow for more long-term growth, by adding a long-term linear growth term to this model  
+  - allow a little more flexibility in the mixture model, allowing for varying long-term growth as well as verying magnitude  
+  
+Our final, refined model will be:
+
+$$
+yield \sim Normal(\mu_i, \sigma_i)  \\  
+\mu_i = trend_i + growth_i  \\  \ \\  
+trend_i = \alpha + \rho_i(\delta_i - year_i)  \\   
+growth_i =  \gamma_i \frac{1 + exp(\beta\eta)}{1 + exp(\beta (\eta - year_i))} \\  \ \\  \ \\
+\alpha \sim Normal(0, 10)  \\  
+\rho_i \sim Normal(0, 5)  \\  
+\delta_i \sim Normal(0, 5)  \\  
+\beta \sim Normal(0, 5)  \\
+\eta \sim Normal(0, 5)  \\
+\gamma_i \sim Normal(0, 5)  \\
+\sigma_i \sim HalfNormal(0, 5)  \\  \ \\  
+where \ i \begin{cases}
+  1, & if \ bumper \ year  \\  
+  0, & otherwise  
+\end{cases}
+$$
+Again, this is starting to look quite complex. But the journey to this final model has been a slow, incremental task where we've added a little more complexity at each step.  
+
+As before, we'll fit this in stan and look at the results. The chains sample nice and quickly, so we'll increase the length of the chain.
+
+```{r}
+fit <- stan(
+  "../stan/avo/final_model.stan",
+  data = list('N' = nrow(avo), yield = avo$TotalTonnes / 100, 'year' = 1:nrow(avo)),
+  chains = 1, iter = 10000, warmup = 2000
+)
+round(summary(fit)$summary[1:16, ], 3)
+```
+
+And we'll look at our final fit:
+
+```{r}
+yhats <- extract(fit)$yhat
+avo[, bumper_growth := colMeans(yhats[,,1])]
+avo[, normal_growth := colMeans(yhats[,,2])]
+
+ggplot(avo, aes(x = Year, y = TotalTonnes / 100)) +
+  geom_bar(stat="identity", colour="darkgrey", fill='white', alpha = 0.5) +
+  geom_line(aes(y = bumper_growth), colour = 'darkblue', linetype='dashed') +
+  geom_line(aes(y = normal_growth), colour = 'darkblue', linetype='dashed') +
+  geom_ribbon(aes(ymin = bumper_growth - 2*apply(yhats[,,1], 2, sd), ymax = bumper_growth + 2*apply(yhats[,,1], 2, sd)),
+              colour = 'darkgrey', alpha=0.25) +
+  geom_ribbon(aes(ymin = normal_growth - 2*apply(yhats[,,2], 2, sd), ymax = normal_growth + 2*apply(yhats[,,2], 2, sd)),
+              colour = 'darkgrey', alpha=0.25) +
+  theme_minimal() +
+  ggtitle("Biennial Growth Model") + xlab("") + ylab("Yield (x100 Tonnes)")
+```
+
+
+### Final Thoughts  
+
+This final model is looking fantastic. Getting here was a bit of a journey - and this undeniably takes time. But look at what we have got for the effort. We have a model which:  
+
+  - respects the domain knowledge, and therefore can reliably be used in an "augmented intelligence" setting  
+  - reflects the surge in popularity in avocados which were a major focus of the annual board reports from 2007 onwards  
+  - is constrained by an reasonable upper ceiling to the yields  
+  - handles the early years prior to 2005  
+  - accounts for both bumper crops and normal crops  
+  - is 100% transparent, interpretable and accurate  
+  
